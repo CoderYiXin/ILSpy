@@ -34,6 +34,7 @@ using Avalonia.Threading;
 using Avalonia.VisualTree;
 
 using AvaloniaEdit.Document;
+using AvaloniaEdit.Editing;
 using AvaloniaEdit.Folding;
 using AvaloniaEdit.Highlighting;
 
@@ -56,6 +57,13 @@ namespace ICSharpCode.ILSpy.TextView
 {
 	public partial class DecompilerTextView : UserControl
 	{
+		internal enum ReferenceClickKind
+		{
+			Default,
+			Navigate,
+			NavigateInNewTab,
+		}
+
 		// Two-track output of BuildHoverContent: rich content opens the sticky Popup with the
 		// pointer-distance corridor; plain content uses Avalonia's ToolTip attached property.
 		internal readonly record struct HoverContent(Control Control, bool IsRich);
@@ -119,6 +127,7 @@ namespace ICSharpCode.ILSpy.TextView
 			// the TextArea's nested-handler chain so the gesture surfaces a search bar without
 			// us wiring KeyBindings manually. Stored for tests; runtime path is the gesture.
 			SearchPanel = AvaloniaEdit.Search.SearchPanel.Install(Editor);
+			SearchPanel.SetSearchResultsBrush(Editor.SearchResultsBrush);
 
 			// AvaloniaEdit defaults to "Ctrl+Click to follow hyperlink" on its built-in
 			// LinkElementGenerator and propagates that flag onto every VisualLineLinkText it
@@ -171,6 +180,41 @@ namespace ICSharpCode.ILSpy.TextView
 				margin.Cursor = ArrowCursor;
 		}
 
+		void KeepBookmarkMarginBeforeLineNumbers()
+		{
+			if (bookmarkMargin == null)
+				return;
+
+			var margins = Editor.TextArea.LeftMargins;
+			var lineNumberIndex = -1;
+			for (var i = 0; i < margins.Count; i++)
+			{
+				if (margins[i] is LineNumberMargin)
+				{
+					lineNumberIndex = i;
+					break;
+				}
+			}
+			var bookmarkIndex = margins.IndexOf(bookmarkMargin);
+			if (lineNumberIndex < 0 || bookmarkIndex < 0 || bookmarkIndex < lineNumberIndex)
+				return;
+
+			var lineNumberMargin = margins[lineNumberIndex];
+			Control? separator = null;
+			if (lineNumberIndex + 1 < margins.Count
+				&& margins[lineNumberIndex + 1] is global::Avalonia.Controls.Shapes.Line)
+				separator = margins[lineNumberIndex + 1];
+
+			if (separator != null)
+				margins.Remove(separator);
+			margins.Remove(lineNumberMargin);
+
+			bookmarkIndex = margins.IndexOf(bookmarkMargin);
+			margins.Insert(bookmarkIndex + 1, lineNumberMargin);
+			if (separator != null)
+				margins.Insert(bookmarkIndex + 2, separator);
+		}
+
 		void OnPreviewKeyDownForOmnibar(object? sender, KeyEventArgs e)
 		{
 			if (e.Key == Key.L && e.KeyModifiers == KeyModifiers.Control && Omnibar.IsVisible)
@@ -213,7 +257,7 @@ namespace ICSharpCode.ILSpy.TextView
 				handledEventsToo: true);
 		}
 
-		// Position of the last left-button press, in this control's coordinates; null while no
+		// Position of the last link-button press, in this control's coordinates; null while no
 		// press is in flight. The release compares against it to tell a click from a drag.
 		Point? referenceClickStart;
 
@@ -222,7 +266,8 @@ namespace ICSharpCode.ILSpy.TextView
 
 		void OnTextAreaPointerPressedForReferenceClick(object? sender, PointerPressedEventArgs e)
 		{
-			referenceClickStart = e.GetCurrentPoint(this).Properties.IsLeftButtonPressed
+			var properties = e.GetCurrentPoint(this).Properties;
+			referenceClickStart = properties.IsLeftButtonPressed || properties.IsMiddleButtonPressed
 				? e.GetPosition(this)
 				: null;
 		}
@@ -231,8 +276,13 @@ namespace ICSharpCode.ILSpy.TextView
 		{
 			var start = referenceClickStart;
 			referenceClickStart = null;
-			if (start == null || e.InitialPressMouseButton != MouseButton.Left)
+			if (start == null || e.InitialPressMouseButton is not (MouseButton.Left or MouseButton.Middle))
 				return;
+			var clickKind = e.InitialPressMouseButton == MouseButton.Middle
+				? ReferenceClickKind.NavigateInNewTab
+				: e.KeyModifiers.HasFlag(KeyModifiers.Control)
+					? ReferenceClickKind.Navigate
+					: ReferenceClickKind.Default;
 			var delta = e.GetPosition(this) - start.Value;
 			if (Math.Abs(delta.X) >= MinimumDragDistance || Math.Abs(delta.Y) >= MinimumDragDistance)
 				return;
@@ -250,7 +300,7 @@ namespace ICSharpCode.ILSpy.TextView
 			// bubbling further now that it has been consumed as a link click.
 			Editor.TextArea.ClearSelection();
 			e.Handled = true;
-			OnReferenceClicked(segment, e.KeyModifiers.HasFlag(KeyModifiers.Control));
+			OnReferenceClicked(segment, clickKind);
 		}
 
 		// Background renderers that live for the view's lifetime: the local-reference highlight (marks
@@ -361,6 +411,7 @@ namespace ICSharpCode.ILSpy.TextView
 		{
 			base.OnAttachedToVisualTree(e);
 			ICSharpCode.ILSpy.Themes.ThemeManager.Current.ThemeChanged += OnThemeChangedRebuildHighlighting;
+			SearchPanel.SetSearchResultsBrush(Editor.SearchResultsBrush);
 			// Ctrl toggles between highlight and navigate for reference clicks; listen at the
 			// top level because the keyboard focus is usually elsewhere while hovering.
 			cursorKeyEventSource = global::Avalonia.Controls.TopLevel.GetTopLevel(this);
@@ -387,6 +438,7 @@ namespace ICSharpCode.ILSpy.TextView
 		// re-coloured instances -- so the already-decompiled output repaints with the new palette.
 		void OnThemeChangedRebuildHighlighting(object? sender, System.EventArgs e)
 		{
+			SearchPanel.SetSearchResultsBrush(Editor.SearchResultsBrush);
 			if (boundModel?.HighlightingSpans is not { Count: > 0 } spans)
 				return;
 			var model = new RichTextModel();
@@ -633,6 +685,11 @@ namespace ICSharpCode.ILSpy.TextView
 			{
 				case nameof(DisplaySettings.ShowLineNumbers):
 					Editor.ShowLineNumbers = s.ShowLineNumbers;
+					if (Editor.ShowLineNumbers)
+					{
+						KeepBookmarkMarginBeforeLineNumbers();
+						Editor.PrepareLineNumberMarginsForRender();
+					}
 					break;
 				case nameof(DisplaySettings.EnableWordWrap):
 					Editor.WordWrap = s.EnableWordWrap;
@@ -1249,9 +1306,9 @@ namespace ICSharpCode.ILSpy.TextView
 		/// highlight instead of navigating: the member-highlight setting is enabled, Ctrl is
 		/// not held, and the reference is a member, type or unresolved entity reference.
 		/// </summary>
-		bool ShouldHighlightInsteadOfNavigate(ReferenceSegment segment, bool ctrlHeld)
+		bool ShouldHighlightInsteadOfNavigate(ReferenceSegment segment, bool forceNavigation)
 		{
-			return !ctrlHeld
+			return !forceNavigation
 				&& segment.Kind == ReferenceMode.Link
 				&& currentDisplaySettings is { HighlightMemberReferences: true }
 				&& segment.Reference is IMember or IType or EntityReference;
@@ -1270,28 +1327,28 @@ namespace ICSharpCode.ILSpy.TextView
 		// The hand cursor promises navigation: show it only when a click would actually
 		// navigate. Re-evaluated on pointer moves and on Ctrl presses/releases while a
 		// reference is under the pointer.
-		void ApplyReferenceCursor(bool ctrlHeld)
+		void ApplyReferenceCursor(bool forceNavigation)
 		{
 			if (cursorQueryElement == null || cursorQuerySegment == null)
 				return;
 			bool navigates = cursorQuerySegment.Kind == ReferenceMode.Link
-				&& !ShouldHighlightInsteadOfNavigate(cursorQuerySegment, ctrlHeld);
+				&& !ShouldHighlightInsteadOfNavigate(cursorQuerySegment, forceNavigation);
 			cursorQueryElement.Cursor = new Cursor(navigates ? StandardCursorType.Hand : StandardCursorType.Arrow);
 		}
 
 		void OnTopLevelKeyDownForReferenceCursor(object? sender, KeyEventArgs e)
 		{
 			if (e.Key is Key.LeftCtrl or Key.RightCtrl)
-				ApplyReferenceCursor(ctrlHeld: true);
+				ApplyReferenceCursor(forceNavigation: true);
 		}
 
 		void OnTopLevelKeyUpForReferenceCursor(object? sender, KeyEventArgs e)
 		{
 			if (e.Key is Key.LeftCtrl or Key.RightCtrl)
-				ApplyReferenceCursor(ctrlHeld: false);
+				ApplyReferenceCursor(forceNavigation: false);
 		}
 
-		internal void OnReferenceClicked(ReferenceSegment segment, bool ctrlHeld = false)
+		internal void OnReferenceClicked(ReferenceSegment segment, ReferenceClickKind clickKind = ReferenceClickKind.Default)
 		{
 			if (DataContext is not DecompilerTabPageModel model || segment.Reference == null)
 				return;
@@ -1313,7 +1370,7 @@ namespace ICSharpCode.ILSpy.TextView
 			// reference paints all its occurrences in this view instead of navigating;
 			// Ctrl+Click keeps the navigation behavior. Opcode references always navigate:
 			// highlighting every occurrence of an IL opcode would be noise.
-			if (ShouldHighlightInsteadOfNavigate(segment, ctrlHeld))
+			if (clickKind == ReferenceClickKind.Default && ShouldHighlightInsteadOfNavigate(segment, forceNavigation: false))
 			{
 				HighlightLocalReferences(model, segment.Reference);
 				return;
@@ -1338,7 +1395,7 @@ namespace ICSharpCode.ILSpy.TextView
 			}
 
 			// Otherwise let the host route the reference (assembly-tree navigation, new tab, ...).
-			model.RaiseNavigateRequested(segment);
+			model.RaiseNavigateRequested(segment, inNewTabPage: clickKind == ReferenceClickKind.NavigateInNewTab);
 		}
 
 		void HighlightLocalReferences(DecompilerTabPageModel model, object reference)

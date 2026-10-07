@@ -285,9 +285,6 @@ Are you sure you want to continue?</value>
   <data name="DEBUGDisassemble" xml:space="preserve">
     <value>DEBUG -- Disassemble All</value>
   </data>
-  <data name="DEBUGDumpPDBAsXML" xml:space="preserve">
-    <value>DEBUG -- Dump PDB as XML</value>
-  </data>
   <data name="DebugSteps" xml:space="preserve">
     <value>Debug Steps</value>
   </data>
@@ -486,6 +483,9 @@ Are you sure you want to continue?</value>
   <data name="DecompilerSettings.IsUnmanagedAttributeOnTypeParametersShouldBeReplacedWithUnmanagedConstraints" xml:space="preserve">
     <value>IsUnmanagedAttribute on type parameters should be replaced with 'unmanaged' constraints</value>
   </data>
+  <data name="DecompilerSettings.LambdaOptionalAndParamsParameters" xml:space="preserve">
+    <value>'params' and optional parameters in lambdas</value>
+  </data>
   <data name="DecompilerSettings.NativeIntegers" xml:space="preserve">
     <value>Use nint/nuint types</value>
   </data>
@@ -578,6 +578,9 @@ Are you sure you want to continue?</value>
   </data>
   <data name="DecompilerSettings.UnsignedRightShift" xml:space="preserve">
     <value>Unsigned right shift (&gt;&gt;&gt;)</value>
+  </data>
+  <data name="DecompilerSettings.UseDefaultLiterals" xml:space="preserve">
+    <value>Use "default" literals without an explicit type</value>
   </data>
   <data name="DecompilerSettings.UseDiscards" xml:space="preserve">
     <value>Use discards</value>
@@ -834,6 +837,9 @@ Are you sure you want to continue?</value>
   <data name="NavigationFailed" xml:space="preserve">
     <value>Navigation failed because the target is hidden or a compiler-generated class.
 Please disable all filters that might hide the item (i.e. activate "View &gt; Show internal types and members") and try again.</value>
+  </data>
+  <data name="NavigationTargetNotFound" xml:space="preserve">
+    <value>Could not find '{0}' in the assemblies that were opened:</value>
   </data>
   <data name="NewList" xml:space="preserve">
     <value>New list</value>

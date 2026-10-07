@@ -18,6 +18,12 @@
 
     <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
 
+    <!-- The suite runs dozens of allocation-heavy decompiles concurrently (one NUnit worker per
+         logical CPU, each roundtrip adding WholeProjectDecompiler's own Parallel.ForEach). Workstation
+         GC stops the whole process for every gen0/gen1 collection any worker triggers; measured on a
+         24-thread machine that was ~300 s of pause in a ~550 s run. Server GC gives each core its own
+         heap and collects in parallel. -->
+    <ServerGarbageCollection>true</ServerGarbageCollection>
     <!-- NU1902/1903 are "Package 'X' has a known security vulnerability". In our tests, we don't care. -->
     <!-- CA1416 fires because the TFM dropped its -windows suffix: Windows-only helpers (SdkUtility,
          Tester.SignAssembly/FindMSBuild/RunWithTestRunner) and Windows-only test inputs (Console.CapsLock
@@ -68,12 +74,6 @@
     <PackageReference Include="System.Reflection.Metadata" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
     <PackageReference Include="Microsoft.CodeAnalysis.VisualBasic" />
-    <PackageReference Include="Microsoft.DiaSymReader.Converter.Xml" />
-    <PackageReference Include="Microsoft.DiaSymReader" />
-    <!-- Referenced unconditionally so restore yields the same packages.lock.json on every OS.
-         The native asset only resolves for win-* RIDs; non-Windows builds ignore it, and the
-         tests that use it are gated by OperatingSystem.IsWindows() + Assert.Ignore at runtime. -->
-    <PackageReference Include="Microsoft.DiaSymReader.Native" />
     <PackageReference Include="NUnit3TestAdapter" />
     <PackageReference Include="coverlet.MTP" />
     <PackageReference Include="NUnit" />
@@ -88,6 +88,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- A .resources container holding two stream entries, so this assembly itself is the module
+         WholeProjectDecompiler's per-entry resource path can be exercised against. -->
+    <EmbeddedResource Include="Helpers\TwoStreamEntries.resources" LogicalName="TwoStreamEntries.g.resources" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\ICSharpCode.ILSpyX\ICSharpCode.ILSpyX.csproj" />
     <ProjectReference Include="..\ICSharpCode.Decompiler\ICSharpCode.Decompiler.csproj" />
   </ItemGroup>
@@ -97,6 +103,7 @@
     <None Include="TestCases\Correctness\StackTests.il" />
     <None Include="TestCases\Correctness\StackTypes.il" />
     <None Include="TestCases\Correctness\Uninit.vb" />
+    <None Include="TestCases\Correctness\VBOnErrorCorrectness.vb" />
     <None Include="TestCases\Disassembler\Pretty\GenericConstraints.il" />
     <None Include="TestCases\Disassembler\Pretty\NegativeConstants.il" />
     <None Include="TestCases\Disassembler\Pretty\InterfaceImplAttributes.il" />
@@ -149,6 +156,8 @@
     <None Include="TestCases\VBPretty\VBAutomaticEvents.vb" />
     <None Include="TestCases\VBPretty\VBNonGenericForEach.vb" />
     <None Include="TestCases\VBPretty\YieldReturn.vb" />
+    <None Include="TestCases\VBPretty\VBTryCatchFinally.vb" />
+    <None Include="TestCases\VBPretty\VBOnError.vb" />
     <None Include="TestCases\VBPretty\Issue1906.vb" />
     <None Include="TestCases\VBPretty\Issue2192.vb" />
     <None Include="TestCases\VBPretty\Select.vb" />
@@ -212,6 +221,20 @@
     <Compile Remove="TestCases\ILPretty\Issue3729.cs" />
     <None Include="TestCases\ILPretty\Issue3729.cs" />
     <None Include="TestCases\ILPretty\Issue3729.il" />
+    <Compile Remove="TestCases\VBPretty\Issue3659.cs" />
+    <None Include="TestCases\VBPretty\Issue3659.cs" />
+    <Compile Remove="TestCases\ILPretty\ParameterizedPropertyInitializer.cs" />
+    <None Include="TestCases\ILPretty\ParameterizedPropertyInitializer.cs" />
+    <None Include="TestCases\ILPretty\ParameterizedPropertyInitializer.il" />
+    <Compile Remove="TestCases\ILPretty\ParamsPropertySetter.cs" />
+    <None Include="TestCases\ILPretty\ParamsPropertySetter.cs" />
+    <None Include="TestCases\ILPretty\ParamsPropertySetter.il" />
+    <Compile Remove="TestCases\ILPretty\IndexerAccessorParameterNames.cs" />
+    <None Include="TestCases\ILPretty\IndexerAccessorParameterNames.cs" />
+    <None Include="TestCases\ILPretty\IndexerAccessorParameterNames.il" />
+    <Compile Remove="TestCases\ILPretty\ParameterizedPropertySetterCall.cs" />
+    <None Include="TestCases\ILPretty\ParameterizedPropertySetterCall.cs" />
+    <None Include="TestCases\ILPretty\ParameterizedPropertySetterCall.il" />
     <Compile Remove="TestCases\ILPretty\SpanConversionOperatorMismatch.cs" />
     <None Include="TestCases\ILPretty\SpanConversionOperatorMismatch.cs" />
     <Compile Remove="TestCases\ILPretty\FSharpLoops_Debug.cs" />
@@ -256,8 +279,14 @@
     <None Include="TestCases\Pretty\NullableRefTypes.cs" />
     <Compile Remove="TestCases\Ugly\AggressiveScalarReplacementOfAggregates.Expected.cs" />
     <None Include="TestCases\Ugly\AggressiveScalarReplacementOfAggregates.Expected.cs" />
+    <Compile Remove="TestCases\Ugly\QualifiedMethodGroup.Expected.cs" />
+    <None Include="TestCases\Ugly\QualifiedMethodGroup.Expected.cs" />
+    <Compile Remove="TestCases\Ugly\BaseQualifier.Expected.cs" />
+    <None Include="TestCases\Ugly\BaseQualifier.Expected.cs" />
     <Compile Remove="TestCases\Ugly\NoArrayInitializers.Expected.cs" />
     <None Include="TestCases\Ugly\NoArrayInitializers.Expected.cs" />
+    <Compile Remove="TestCases\Ugly\NoAutomaticProperties.Expected.cs" />
+    <None Include="TestCases\Ugly\NoAutomaticProperties.Expected.cs" />
     <Compile Remove="TestCases\Ugly\NoDecimalConstants.Expected.cs" />
     <None Include="TestCases\Ugly\NoDecimalConstants.Expected.cs" />
     <Compile Remove="TestCases\Ugly\NoExtensionMethods.Expected.cs" />
@@ -266,6 +295,8 @@
     <None Include="TestCases\Ugly\NoFieldKeyword.Expected.cs" />
     <Compile Remove="TestCases\Ugly\NoForEachStatement.Expected.cs" />
     <None Include="TestCases\Ugly\NoForEachStatement.Expected.cs" />
+    <Compile Remove="TestCases\Ugly\NoGetterOnlyAutomaticProperties.Expected.cs" />
+    <None Include="TestCases\Ugly\NoGetterOnlyAutomaticProperties.Expected.cs" />
     <Compile Remove="TestCases\Ugly\NoInitAccessors.Expected.cs" />
     <None Include="TestCases\Ugly\NoInitAccessors.Expected.cs" />
     <Compile Remove="TestCases\Ugly\NoLocalFunctions.Expected.cs" />
@@ -288,6 +319,8 @@
     <None Include="TestCases\Ugly\TopLevelProgramAsync.Expected.cs" />
     <Compile Remove="TestCases\VBPretty\VBCompoundAssign.cs" />
     <None Include="TestCases\VBPretty\VBCompoundAssign.cs" />
+    <Compile Remove="TestCases\VBPretty\VBOnError.cs" />
+    <None Include="TestCases\VBPretty\VBOnError.cs" />
   </ItemGroup>
 
 </Project>

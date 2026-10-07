@@ -52,6 +52,18 @@ namespace ICSharpCode.Decompiler.Tests
 		}
 
 		[Test]
+		public async Task Issue3320()
+		{
+			await Run();
+		}
+
+		[Test]
+		public async Task ConditionalChain()
+		{
+			await Run();
+		}
+
+		[Test]
 		public async Task AnonymousMethodEdgeCases()
 		{
 			await Run();
@@ -101,6 +113,12 @@ namespace ICSharpCode.Decompiler.Tests
 
 		[Test]
 		public async Task Issue1389()
+		{
+			await Run();
+		}
+
+		[Test]
+		public async Task Issue3136()
 		{
 			await Run();
 		}
@@ -425,6 +443,42 @@ namespace ICSharpCode.Decompiler.Tests
 
 		[Test]
 		public async Task Issue3729()
+		{
+			await Run();
+		}
+
+		[Test]
+		public async Task Issue4180()
+		{
+			await Run();
+		}
+
+		[Test]
+		public async Task ParamsPropertySetter()
+		{
+			await Run();
+		}
+
+		[Test]
+		public async Task ParameterizedPropertyInitializer()
+		{
+			await Run();
+		}
+
+		[Test]
+		public async Task IndexerAccessorParameterNames()
+		{
+			await Run();
+		}
+
+		[Test]
+		public async Task ParameterizedPropertySetterCall()
+		{
+			await Run();
+		}
+
+		[Test]
+		public async Task PropertyBackingFieldWithoutCompilerGeneratedAttribute()
 		{
 			await Run();
 		}

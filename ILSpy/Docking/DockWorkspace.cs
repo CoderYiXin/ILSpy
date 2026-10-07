@@ -84,6 +84,15 @@ namespace ICSharpCode.ILSpy.Docking
 		/// behaviour (e.g. ShowOptionsCommand).</summary>
 		public IDocumentDock? Documents => factory.Documents;
 
+		/// <summary>
+		/// Whether decompiles started in this workspace record their transform steps. Set on the UI
+		/// thread by whoever displays them and copied into each run's <see cref="DecompilationOptions"/>,
+		/// so a background decompile never samples live view state - and every tab, including ones
+		/// opened later, records the same way. A step index only means anything against a run
+		/// recorded like the one the index was taken from.
+		/// </summary>
+		public bool RecordSteps { get; set; }
+
 		public IRelayCommand NavigateBackCommand { get; }
 		public IRelayCommand NavigateForwardCommand { get; }
 		public IRelayCommand<NavigationEntry> NavigateToHistoryCommand { get; }
@@ -193,11 +202,11 @@ namespace ICSharpCode.ILSpy.Docking
 					factory.InitLayout(Layout);
 			}
 
+			// A selection change reaches ShowSelectedNode through OnAssemblyTreePropertyChanged:
+			// the model raises SelectedItem whenever the selection settles, including once at the
+			// end of a bulk edit. Subscribing to SelectedItems.CollectionChanged as well would run
+			// it a second time, and once per node during a bulk edit.
 			assemblyTreeModel.PropertyChanged += OnAssemblyTreePropertyChanged;
-			assemblyTreeModel.SelectedItems.CollectionChanged += (_, _) => {
-				if (!syncingTreeFromActiveTab)
-					ShowSelectedNode();
-			};
 			languageService.PropertyChanged += OnLanguagePropertyChanged;
 
 			ToolPaneMenuItems = toolPaneRegistry.Panes
@@ -234,20 +243,22 @@ namespace ICSharpCode.ILSpy.Docking
 		{
 			var inner = e.Inner;
 
-			// On Reset (assembly list wholesale-cleared), drop ALL history — every entry is
-			// stale by definition.
-			if (inner.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset)
-			{
-				PruneHistoryAfterAssemblyListChange(removed: null);
+			// A Move carries the moved entry in OldItems, but the list only got reordered.
+			if (inner.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Move)
 				return;
-			}
 
-			if (inner.OldItems is not { Count: > 0 } oldItems)
-				return;
-			var removed = new HashSet<ICSharpCode.ILSpyX.LoadedAssembly>(
-				oldItems.OfType<ICSharpCode.ILSpyX.LoadedAssembly>());
-			if (removed.Count == 0)
-				return;
+			// On Reset the list was cleared wholesale: every entry is stale by definition, and
+			// `removed == null` below stands for "all of them".
+			HashSet<ICSharpCode.ILSpyX.LoadedAssembly>? removed = null;
+			if (inner.Action != System.Collections.Specialized.NotifyCollectionChangedAction.Reset)
+			{
+				if (inner.OldItems is not { Count: > 0 } oldItems)
+					return;
+				removed = new HashSet<ICSharpCode.ILSpyX.LoadedAssembly>(
+					oldItems.OfType<ICSharpCode.ILSpyX.LoadedAssembly>());
+				if (removed.Count == 0)
+					return;
+			}
 
 			PruneHistoryAfterAssemblyListChange(removed);
 
@@ -268,7 +279,7 @@ namespace ICSharpCode.ILSpy.Docking
 					var owner = n.AncestorsAndSelf().OfType<TreeNodes.AssemblyTreeNode>().LastOrDefault();
 					if (owner is null)
 						continue;
-					if (removed.Contains(owner.LoadedAssembly))
+					if (removed == null || removed.Contains(owner.LoadedAssembly))
 						anyTouchesRemoved = true;
 					else
 						anyAlive = true;
@@ -596,7 +607,11 @@ namespace ICSharpCode.ILSpy.Docking
 			suppressHistoryRecording = true;
 			try
 			{
-				if (factory.Documents?.VisibleDockables is { } docs && docs.Contains(target.Tab))
+				// Only activate a tab that is not already active: Dock's ActiveDockable setter re-runs
+				// InitActiveDockable -> SetFocusedDockable even for an unchanged value, which would
+				// move the active pane to the document on every navigation.
+				if (factory.Documents is { VisibleDockables: { } docs } documents
+					&& docs.Contains(target.Tab) && !ReferenceEquals(documents.ActiveDockable, target.Tab))
 					factory.SetActiveDockable(target.Tab);
 				if (target is TreeNodeEntry treeNode)
 				{
@@ -645,17 +660,15 @@ namespace ICSharpCode.ILSpy.Docking
 			}
 		}
 
-		void OnNavigateRequested(ReferenceSegment segment)
+		void OnNavigateRequested(object? sender, NavigateRequestedEventArgs e)
 		{
 			// Hyperlink click in the decompiler view: resolve the segment's reference to a tree
 			// node and select it. Falls through silently when we don't know how to model the
 			// reference (only types/members/EntityReferences are supported today).
-			if (segment.Reference == null)
-				return;
 			// EntityReferences with a non-"decompile" protocol (e.g. metadata://) get a first
 			// pass through registered IProtocolHandler exports. The first handler returning a
 			// non-null node wins; if none match we fall through to the default resolver.
-			if (segment.Reference is ICSharpCode.ILSpy.EntityReference entity
+			if (e.Reference is ICSharpCode.ILSpy.EntityReference entity
 				&& entity.Protocol != "decompile")
 			{
 				var module = entity.ResolveAssembly(assemblyTreeModel.AssemblyList!);
@@ -666,15 +679,23 @@ namespace ICSharpCode.ILSpy.Docking
 						var resolved = handler.Resolve(entity.Protocol, module, entity.Handle, out _);
 						if (resolved != null)
 						{
-							assemblyTreeModel.SelectedItem = resolved;
+							if (e.InNewTabPage)
+								OpenNodeInNewTab(resolved);
+							else
+								assemblyTreeModel.SelectedItem = resolved;
 							return;
 						}
 					}
 				}
 			}
-			var node = assemblyTreeModel.FindTreeNode(segment.Reference);
+			var node = assemblyTreeModel.FindTreeNode(e.Reference);
 			if (node != null)
-				assemblyTreeModel.SelectedItem = node;
+			{
+				if (e.InNewTabPage)
+					OpenNodeInNewTab(node);
+				else
+					assemblyTreeModel.SelectedItem = node;
+			}
 		}
 
 		static IEnumerable<Commands.IProtocolHandler> TryGetProtocolHandlers()
@@ -778,6 +799,16 @@ namespace ICSharpCode.ILSpy.Docking
 				lastShownNodes = null;
 				return;
 			}
+			var activeAssemblies = new HashSet<ICSharpCode.ILSpyX.LoadedAssembly>(
+				assemblyTreeModel.AssemblyList?.GetAssemblies() ?? []);
+			if (nodes.Any(n => n.AncestorsAndSelf()
+				.OfType<AssemblyTreeNode>()
+				.Any(a => !IsActiveAssemblyOrPackageEntry(a.LoadedAssembly, activeAssemblies))))
+			{
+				lastShownNodes = null;
+				ClearActiveDecompilerTab();
+				return;
+			}
 			// SelectedItems.CollectionChanged and SelectedItem PropertyChanged both fan into
 			// here on a single click, so dedupe to avoid creating two TabPageModels for the
 			// same selection — the second one's columns would replace the first's, but the
@@ -846,6 +877,17 @@ namespace ICSharpCode.ILSpy.Docking
 			main.SourceNode = nodes.Length == 1 ? nodes[0] : null;
 			using (ICSharpCode.ILSpy.AppEnv.AppLog.Phase("ShowSelectedNode: ActivateMainTabIfNeeded"))
 				ActivateMainTabIfNeeded(main);
+		}
+
+		static bool IsActiveAssemblyOrPackageEntry(ICSharpCode.ILSpyX.LoadedAssembly assembly,
+			HashSet<ICSharpCode.ILSpyX.LoadedAssembly> activeAssemblies)
+		{
+			for (var current = assembly; current != null; current = current.ParentBundle)
+			{
+				if (activeAssemblies.Contains(current))
+					return true;
+			}
+			return false;
 		}
 
 		// The "exactly one preview tab" rule: tree selections always route to the single preview
@@ -1024,6 +1066,15 @@ namespace ICSharpCode.ILSpy.Docking
 
 		public DecompilerTabPageModel? ActiveDecompilerTab
 			=> factory.MainTab?.Content as DecompilerTabPageModel is { IsStaticContent: false } d ? d : null;
+
+		public void ClearActiveDecompilerTab()
+		{
+			if (ActiveDecompilerTab is not { } tab)
+				return;
+			tab.ClearContent();
+			if (factory.MainTab is { } main)
+				main.SourceNode = null;
+		}
 
 		/// <summary>
 		/// Forwards to <see cref="DecompilerTabPageModel.RunWithCancellation"/> on the active

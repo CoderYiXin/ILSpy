@@ -33,12 +33,20 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 	{
 		public static Maybe<TResult> Select<T, TResult>(this Maybe<T> a, Func<T, TResult> fn)
 		{
+#if CS71
+			return default;
+#else
 			return default(Maybe<TResult>);
+#endif
 		}
 
 		public static Maybe<T> Where<T>(this Maybe<T> a, Func<T, bool> predicate)
 		{
+#if CS71
+			return default;
+#else
 			return default(Maybe<T>);
+#endif
 		}
 	}
 
@@ -48,13 +56,19 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		{
 			public Maybe<int> Value;
 
-#if CS60
+#if CS71
+			public Maybe<int> this[int index] => default;
+#elif CS60
 			public Maybe<int> this[int index] => default(Maybe<int>);
 #endif
 
 			public Func<Maybe<int>> Factory()
 			{
+#if CS71
+				return () => default;
+#else
 				return () => default(Maybe<int>);
+#endif
 			}
 		}
 
@@ -250,21 +264,12 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 		public static IEnumerable<char> Issue1310a(bool test)
 		{
-#if ROSLYN && OPT
-			IEnumerable<char> obj = (test ? (from c in Enumerable.Range(0, 255)
-											 where char.IsLetter((char)c)
-											 select (char)c) : (from c in Enumerable.Range(0, 255)
-																where char.IsDigit((char)c)
-																select (char)c));
-			return obj.Concat(obj);
-#else
 			IEnumerable<char> enumerable = (test ? (from c in Enumerable.Range(0, 255)
 													where char.IsLetter((char)c)
 													select (char)c) : (from c in Enumerable.Range(0, 255)
 																	   where char.IsDigit((char)c)
 																	   select (char)c));
 			return enumerable.Concat(enumerable);
-#endif
 		}
 
 		public static Maybe<TB> Cast<TA, TB>(Maybe<TA> a) where TB : class
@@ -274,5 +279,18 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 				   where t != null
 				   select t;
 		}
+
+#if CS70
+		public IEnumerable<string> Issue3352()
+		{
+			// We don't have backward type inference, so LINQ syntax cannot be used with named tuple types.
+			return new (string, int)[4] {
+				("A", 10),
+				("B", 20),
+				("C", 30),
+				("D", 40)
+			}.Where(((string Name, int Age) t) => t.Age >= 18).Select(((string Name, int Age) t) => t.Name);
+		}
+#endif
 	}
 }

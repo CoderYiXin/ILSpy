@@ -22,6 +22,8 @@ using System.Linq;
 using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.ILSpy.Properties;
 
+using ICSharpCode.ILSpy.AssemblyTree;
+using ICSharpCode.ILSpy.Commands;
 using ICSharpCode.ILSpy.Docking;
 using ICSharpCode.ILSpy.TreeNodes;
 
@@ -29,9 +31,11 @@ namespace ICSharpCode.ILSpy.Analyzers
 {
 	/// <summary>
 	/// Right-click → "Analyze" — pushes every selected member (type, method, field, property,
-	/// event) into the analyzer pane. The pane's <see cref="AnalyzerTreeViewModel.Analyze"/>
-	/// dedupes entries by <see cref="IEntity.MetadataToken"/> + parent module so re-running
-	/// the menu on the same entity just refocuses the existing row.
+	/// event) into the analyzer pane, from the assembly tree, from a code reference, or from a
+	/// result row inside the analyzer pane itself (promoting it to a top-level entry). The
+	/// pane's <see cref="AnalyzerTreeViewModel.Analyze"/> dedupes entries by
+	/// <see cref="IEntity.MetadataToken"/> + parent module so re-running the menu on the same
+	/// entity just refocuses the existing row.
 	/// </summary>
 	[ExportContextMenuEntry(
 		Header = nameof(Resources.Analyze),
@@ -52,21 +56,35 @@ namespace ICSharpCode.ILSpy.Analyzers
 		}
 
 		public bool IsVisible(TextViewContext context)
+			=> IsVisibleForContext(context);
+
+		public bool IsEnabled(TextViewContext context)
+			=> IsEnabledForContext(context);
+
+		public void Execute(TextViewContext context)
+			=> Analyze(context, analyzerTreeViewModel, dockWorkspace);
+
+		public static bool IsVisibleForContext(TextViewContext context)
 		{
 			if (context.SelectedTreeNodes is { Length: > 0 } nodes)
-				return nodes.All(n => n is IMemberTreeNode);
+			{
+				// Top-level analyzer rows are already analysed (Remove is the entry for those);
+				// result rows underneath promote their entity to a new top-level row.
+				return nodes.All(n => n is IMemberTreeNode
+					&& n is not AnalyzerEntityTreeNode { Parent.IsRoot: true });
+			}
 			// Right-clicking a resolved symbol in the decompiled code: the reference carries the entity.
 			return context.Reference?.Reference is IEntity;
 		}
 
-		public bool IsEnabled(TextViewContext context)
+		public static bool IsEnabledForContext(TextViewContext context)
 		{
 			if (context.SelectedTreeNodes is { Length: > 0 } nodes)
 				return nodes.OfType<IMemberTreeNode>().All(n => IsAnalysable(n.Member));
 			return context.Reference?.Reference is IEntity entity && IsAnalysable(entity);
 		}
 
-		public void Execute(TextViewContext context)
+		public static bool Analyze(TextViewContext context, AnalyzerTreeViewModel analyzerTreeViewModel, DockWorkspace dockWorkspace)
 		{
 			var analysable = MembersToAnalyse(context);
 			foreach (var member in analysable)
@@ -75,7 +93,11 @@ namespace ICSharpCode.ILSpy.Analyzers
 			// added. AnalyzerTreeViewModel.Analyze deliberately leaves dock-activation to its
 			// caller — that's this entry's job.
 			if (analysable.Count > 0)
+			{
 				dockWorkspace.ShowToolPane(AnalyzerTreeViewModel.PaneContentId);
+				return true;
+			}
+			return false;
 		}
 
 		// The analysable entities for this invocation: a tree-node selection (assembly/analyzer tree),
@@ -100,5 +122,29 @@ namespace ICSharpCode.ILSpy.Analyzers
 		/// analyser can match against — exclude them so the entry stays disabled.
 		/// </summary>
 		static bool IsAnalysable(IEntity? entity) => entity is not null and not IField { IsConst: true };
+	}
+
+	[Export]
+	[Shared]
+	[method: ImportingConstructor]
+	public sealed class AnalyzeCommand(
+		AssemblyTreeModel assemblyTreeModel,
+		AnalyzerTreeViewModel analyzerTreeViewModel,
+		DockWorkspace dockWorkspace) : SimpleCommand
+	{
+		public override bool CanExecute(object? parameter)
+		{
+			var context = CreateContext();
+			return AnalyzeContextMenuEntry.IsVisibleForContext(context)
+				&& AnalyzeContextMenuEntry.IsEnabledForContext(context);
+		}
+
+		public override void Execute(object? parameter)
+			=> AnalyzeContextMenuEntry.Analyze(CreateContext(), analyzerTreeViewModel, dockWorkspace);
+
+		TextViewContext CreateContext()
+			=> new() {
+				SelectedTreeNodes = assemblyTreeModel.SelectedItems.ToArray(),
+			};
 	}
 }

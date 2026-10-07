@@ -18,6 +18,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.Composition;
@@ -27,6 +28,8 @@ using System.Reflection.Metadata.Ecma335;
 using System.Runtime.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
+
+using Avalonia.Threading;
 
 using CommunityToolkit.Mvvm.ComponentModel;
 
@@ -106,21 +109,16 @@ namespace ICSharpCode.ILSpy.AssemblyTree
 			ArgumentNullException.ThrowIfNull(nodes);
 			if (SelectionMatches(nodes))
 				return;
-			batchingSelectionChange = true;
-			try
+			using (BatchSelectionChange())
 			{
 				SelectedItems.Clear();
+				var seen = new HashSet<SharpTreeNode>();
 				foreach (var node in nodes)
 				{
-					if (node != null && !SelectedItems.Contains(node))
+					if (node != null && seen.Add(node))
 						SelectedItems.Add(node);
 				}
 			}
-			finally
-			{
-				batchingSelectionChange = false;
-			}
-			RaiseSelectionChanged();
 		}
 
 		bool SelectionMatches(IReadOnlyList<SharpTreeNode> nodes)
@@ -201,10 +199,49 @@ namespace ICSharpCode.ILSpy.AssemblyTree
 				decompTab.HighlightedReference = e.Source;
 		}
 
-		// True while the SelectedItem setter is replacing the collection via Clear()+Add();
-		// suppresses the selection-changed fan-out until the final state is in place so consumers
-		// never observe the transient empty/multi mid-replace.
-		bool batchingSelectionChange;
+		// Greater than zero while a bulk edit is rewriting SelectedItems; suppresses the
+		// selection-changed fan-out until the final state is in place so consumers never observe a
+		// transient empty/multi mid-replace, and so the fan-out costs one pass rather than one per
+		// node. RaiseSelectionChanged reaches a full command re-query, a session-settings write, a
+		// message-bus broadcast and a decompile of the new selection, so running it per node is
+		// what made selecting a large subtree freeze the UI.
+		int selectionBatchDepth;
+
+		// Set when a change actually arrived while a batch was open, so a batch that rewrote the
+		// selection to what it already was closes without notifying anyone.
+		bool selectionChangedDuringBatch;
+
+		/// <summary>
+		/// Suppresses the selection fan-out for the lifetime of the returned scope, then raises it
+		/// exactly once. Nests; only the outermost scope raises.
+		/// </summary>
+		public IDisposable BatchSelectionChange() => new SelectionBatchScope(this);
+
+		sealed class SelectionBatchScope : IDisposable
+		{
+			readonly AssemblyTreeModel model;
+			bool disposed;
+
+			public SelectionBatchScope(AssemblyTreeModel model)
+			{
+				this.model = model;
+				model.selectionBatchDepth++;
+			}
+
+			public void Dispose()
+			{
+				if (disposed)
+					return;
+				disposed = true;
+				if (--model.selectionBatchDepth > 0)
+					return;
+				if (model.selectionChangedDuringBatch)
+				{
+					model.selectionChangedDuringBatch = false;
+					model.RaiseSelectionChanged();
+				}
+			}
+		}
 
 		void OnSelectedItemsChanged(object? sender, NotifyCollectionChangedEventArgs e)
 		{
@@ -215,10 +252,13 @@ namespace ICSharpCode.ILSpy.AssemblyTree
 				foreach (SharpTreeNode n in e.OldItems)
 					n.IsSelected = false;
 
-			// During a SelectedItem-setter batch the fan-out is deferred to the single
-			// RaiseSelectionChanged() the setter issues once the final selection is in place.
-			if (batchingSelectionChange)
+			// Inside a batch the fan-out is deferred to the single RaiseSelectionChanged() the
+			// outermost scope issues once the final selection is in place.
+			if (selectionBatchDepth > 0)
+			{
+				selectionChangedDuringBatch = true;
 				return;
+			}
 			RaiseSelectionChanged();
 		}
 
@@ -517,7 +557,7 @@ namespace ICSharpCode.ILSpy.AssemblyTree
 				ShowAssemblyList(list);
 		}
 
-		void ShowAssemblyList(AssemblyList list)
+		internal void ShowAssemblyList(AssemblyList list)
 		{
 			using var _ = AppEnv.AppLog.Phase("ShowAssemblyList(list)");
 			// Detach the previous list's collection-changed wiring so the MessageBus
@@ -526,7 +566,17 @@ namespace ICSharpCode.ILSpy.AssemblyTree
 			// that subscribe to CurrentAssemblyListChangedEventArgs see add/remove events
 			// from the live list.
 			if (AssemblyList is { } previous)
+			{
 				previous.CollectionChanged -= OnActiveAssemblyListCollectionChanged;
+				// Everything below builds a new tree, so the selection, the open tabs and the
+				// navigation history all describe a list that is about to stop being shown.
+				// Nothing is removed from that list - it is the list itself that goes away - so
+				// no collection event announces it, and the panes are told with the same Reset
+				// that clearing a list raises, which is the one path that discards all of it.
+				SelectedItems.Clear();
+				Util.MessageBus.Send(this, new Util.CurrentAssemblyListChangedEventArgs(
+					new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset)));
+			}
 			AssemblyList = list;
 			list.CollectionChanged += OnActiveAssemblyListCollectionChanged;
 			if (list.GetAssemblies().Length == 0 && list.ListName == AssemblyListManager.DefaultListName)
@@ -581,6 +631,11 @@ namespace ICSharpCode.ILSpy.AssemblyTree
 						loadTasks.Add(Task.Run(async () => {
 							try
 							{ await assembly.GetLoadResultAsync().ConfigureAwait(false); }
+							catch (Exception)
+							{
+								// A file that cannot be loaded is an expected outcome, recorded on the
+								// LoadedAssembly itself (HasLoadError). It must not fault the sweep.
+							}
 							finally
 							{ throttle.Release(); }
 						}));
@@ -726,21 +781,55 @@ namespace ICSharpCode.ILSpy.AssemblyTree
 				? new List<LoadedAssembly>(newlyLoaded)
 				: AssemblyList?.GetAssemblies().ToList() ?? new List<LoadedAssembly>();
 
-			if (args.NavigateTo is { Length: > 0 } navigateTo)
-				await NavigateOnLaunchAsync(navigateTo, relevant);
-			else if (newlyLoaded.Count == 1 && FindAssemblyNode(newlyLoaded[0]) is { } singleNode)
+			// Only a target that actually resolved gets to own the selection. An ID naming
+			// nothing falls through to the same single-assembly selection that opening the
+			// file without --navigateto would have made, rather than leaving the tree empty
+			// with no indication of what went wrong.
+			bool navigationHandled = args.NavigateTo is { Length: > 0 } navigateTo
+				&& await NavigateOnLaunchAsync(navigateTo, relevant);
+			if (!navigationHandled && newlyLoaded.Count == 1 && FindAssemblyNode(newlyLoaded[0]) is { } singleNode)
 				SelectNode(singleNode);
+			// An ID that named nothing leaves the tree wherever it was, which on its own says
+			// only that the jump did not happen. Name the target and what was searched, in the
+			// pane the jump would have filled.
+			if (!navigationHandled && args.NavigateTo is { Length: > 0 } unresolved)
+				ReportUnresolvedNavigationTarget(unresolved, relevant);
 
 			// Search-pane wiring lands with task 6. Until then the arg parses but is a no-op
 			// rather than crashing.
 		}
 
-		async Task NavigateOnLaunchAsync(string navigateTo, IList<LoadedAssembly> relevant)
+		static void ReportUnresolvedNavigationTarget(string navigateTo, IList<LoadedAssembly> searched)
+		{
+			var output = new TextView.AvaloniaEditTextOutput { Title = "Navigation" };
+			output.WriteLine(string.Format(Properties.Resources.NavigationTargetNotFound, navigateTo));
+			foreach (var asm in searched)
+			{
+				output.WriteLine("    " + asm.FileName);
+			}
+			if (AppEnv.AppComposition.TryGetExport<Docking.DockWorkspace>() is not { } dockWorkspace)
+				return;
+			// ShowText writes to the active decompiler tab and does nothing at all when the
+			// active content is something else - a metadata table, or nothing yet at startup,
+			// which is exactly when this report is written. A report that can go missing is no
+			// better than the silence it replaces, so fall back to a tab of its own.
+			if (dockWorkspace.ActiveDecompilerTab != null)
+				dockWorkspace.ShowText(output);
+			else
+				dockWorkspace.ShowTextInNewTab(output.Title, output);
+		}
+
+		/// <summary>
+		/// Navigates to the given target. Returns false if it named nothing, leaving the
+		/// selection for the caller to fill in.
+		/// </summary>
+		async Task<bool> NavigateOnLaunchAsync(string navigateTo, IList<LoadedAssembly> relevant)
 		{
 			// "none" is a sentinel used by the WPF VS add-in to suppress initial navigation —
-			// the real target arrives later via IPC.
+			// the real target arrives later via IPC. Nothing else may claim the selection
+			// either, so this counts as handled.
 			if (navigateTo == "none")
-				return;
+				return true;
 
 			if (navigateTo.StartsWith("N:", StringComparison.Ordinal))
 			{
@@ -757,10 +846,10 @@ namespace ICSharpCode.ILSpy.AssemblyTree
 					if (nsNode != null)
 					{
 						SelectNode(nsNode);
-						return;
+						return true;
 					}
 				}
-				return;
+				return false;
 			}
 
 			// A gone or unreadable assembly resolves to null and is skipped by the entity search
@@ -768,29 +857,72 @@ namespace ICSharpCode.ILSpy.AssemblyTree
 			foreach (var asm in relevant)
 				await asm.GetMetadataFileOrNullAsync().ConfigureAwait(true);
 
-			var entity = await Task.Run(() => FindEntityInRelevantAssemblies(navigateTo, relevant));
-			if (entity != null)
+			var group = await Task.Run(() => FindEntitiesInRelevantAssemblies(navigateTo, relevant));
+			if (group.Count == 0)
+				return false;
+			// The short form of an overloaded member names the whole group, and no single
+			// overload answers it better than its siblings. Selecting all of them shows every
+			// one while staying at the member level, where the group is what the user was
+			// pointing at; picking one would hide that there was anything to pick.
+			var nodes = new List<SharpTreeNode>(group.Count);
+			foreach (var entity in group)
 			{
-				var node = FindTreeNode(entity);
-				if (node != null)
-					SelectNode(node);
+				if (FindTreeNode(entity) is { } found)
+					nodes.Add(found);
 			}
+			if (nodes.Count == 0)
+				return false;
+			SelectNodes(nodes);
+			return true;
 		}
 
 		internal static IEntity? FindEntityInRelevantAssemblies(string navigateTo, IEnumerable<LoadedAssembly> relevantAssemblies)
 		{
-			// Reference assemblies are skipped so the search keeps looking for another
-			// assembly that might have a usable definition.
-			IReadOnlyList<MetadataFile> modules = [.. from asm in relevantAssemblies let mod = asm.GetMetadataFileOrNull() where mod != null && !mod.IsReferenceAssembly() select mod];
-			var (module, handle) = IdStringProvider.FindEntity(navigateTo, modules);
-			if (module == null || handle.IsNil)
-				(module, handle) = FindMemberViaTypeForwarders(navigateTo, modules);
-			if (module == null || handle.IsNil)
-				return null;
-			var metadataModule = module.GetLoadedAssembly().GetTypeSystemOrNull()?.MainModule as MetadataModule;
-			if (metadataModule == null)
-				return null;
-			return metadataModule.ResolveEntity(handle);
+			var group = FindEntitiesInRelevantAssemblies(navigateTo, relevantAssemblies);
+			return group.Count == 0 ? null : group[0];
+		}
+
+		/// <summary>
+		/// Resolves a navigation target to every entity it names. A member ID written without
+		/// its signature names an overload group; the caller decides how to present one.
+		/// </summary>
+		internal static IReadOnlyList<IEntity> FindEntitiesInRelevantAssemblies(string navigateTo, IEnumerable<LoadedAssembly> relevantAssemblies)
+		{
+			IReadOnlyList<MetadataFile> loaded = [.. from asm in relevantAssemblies let mod = asm.GetMetadataFileOrNull() where mod != null select mod];
+			// A definition with a body says more than a signature-only one, so the reference
+			// assemblies are searched only once the others have come up empty. Skipping them
+			// outright would leave the target unresolved for the assembly list a project's
+			// references make up, which is what the VS add-in passes (issue #2093).
+			var (module, handles) = FindInModules([.. loaded.Where(mod => !mod.IsReferenceAssembly())]);
+			if (module == null)
+				(module, handles) = FindInModules([.. loaded.Where(mod => mod.IsReferenceAssembly())]);
+			if (module == null)
+				return [];
+
+			(MetadataFile? Module, ImmutableArray<EntityHandle> Handles) FindInModules(IReadOnlyList<MetadataFile> modules)
+			{
+				if (modules.Count == 0)
+					return default;
+				// The id came from a command line, so it is searched with the omission-tolerant
+				// ladder rather than resolved exactly: a parameter list or a generic arity that
+				// has to be spelled out is one the caller had to know before asking.
+				var (found, foundHandles) = DocumentationIdSearch.Find(navigateTo, modules);
+				if (found != null && !foundHandles.IsEmpty)
+					return (found, foundHandles);
+				var (forwardedModule, handle) = FindMemberViaTypeForwarders(navigateTo, modules);
+				if (forwardedModule == null || handle.IsNil)
+					return default;
+				return (forwardedModule, [handle]);
+			}
+			if (module.GetLoadedAssembly().GetTypeSystemOrNull()?.MainModule is not MetadataModule metadataModule)
+				return [];
+			var entities = new List<IEntity>(handles.Length);
+			foreach (var handle in handles)
+			{
+				if (metadataModule.ResolveEntity(handle) is { } entity)
+					entities.Add(entity);
+			}
+			return entities;
 		}
 
 		/// <summary>
@@ -928,6 +1060,10 @@ namespace ICSharpCode.ILSpy.AssemblyTree
 		/// </summary>
 		void OnActiveAssemblyListCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
 		{
+			// A Move carries the moved entry in OldItems, but nothing left the list: sorting must
+			// not look like removal to anything downstream.
+			if (e.Action == NotifyCollectionChangedAction.Move)
+				return;
 			// Prune navigation-history entries that pointed at tree nodes inside removed
 			// assemblies BEFORE re-publishing — Back/Forward consumers (the toolbar
 			// commands + dropdowns) re-evaluate their CanExecute when the bus fires, so
@@ -945,9 +1081,33 @@ namespace ICSharpCode.ILSpy.AssemblyTree
 			}
 			Util.MessageBus.Send(this, new Util.CurrentAssemblyListChangedEventArgs(e));
 
+			// The removed assemblies took the selected node with them. Hand the selection to the
+			// nearest survivor so the tree does not come back empty-handed while it still has
+			// something to show; the tree view does this for its own Delete gesture, but a
+			// removal from anywhere else (the context menu, a command, a reload) would not.
+			// With nothing left there is nothing to select, and the panes stay empty.
+			if (e.OldItems is { Count: > 0 })
+				SelectSurvivorAfterRemoval(e.OldStartingIndex);
+
 			// List-dependent menu commands (Clear assembly list, Remove assemblies with load errors)
 			// re-evaluate CanExecute now that the list gained or lost entries.
 			Commands.CommandManager.InvalidateRequerySuggested();
+		}
+
+		/// <summary>
+		/// Puts the selection back on the row nearest to where the removed ones were, once the
+		/// tree has caught up with the removal. Does nothing while something is still selected -
+		/// only some of the removed assemblies held the selection, or none did.
+		/// </summary>
+		void SelectSurvivorAfterRemoval(int removedIndex)
+		{
+			Dispatcher.UIThread.Post(() => {
+				if (SelectedItems.Count > 0)
+					return;
+				if (Root is not { } root || root.Children.Count == 0)
+					return;
+				SelectNode(root.Children[Math.Clamp(removedIndex, 0, root.Children.Count - 1)]);
+			}, DispatcherPriority.Background);
 		}
 
 		// Coalesces burst F5 / programmatic Refresh() calls into a single async pipeline.

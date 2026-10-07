@@ -88,6 +88,15 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			}
 		}
 
+#if CS110
+		public record WithRequiredMembers
+		{
+			public required Type ServiceType { get; init; }
+
+			public required object ServiceKey { get; init; }
+		}
+#endif
+
 		[AttributeUsage(AttributeTargets.All)]
 		public class RecordTestAttribute : Attribute
 		{
@@ -242,6 +251,40 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			private string? WebValue { get; } = (name != null) ? "111" : value;
 
 			private string? WebValue2;
+		}
+
+		public record FieldBeforeProperty(int ID, string Text)
+		{
+			public int Field;
+
+			public int Property { get; set; }
+		}
+
+		public record FieldsAndPropertiesInterleaved(int ID)
+		{
+			public int First;
+
+			public int Middle { get; set; }
+
+			public int Last;
+		}
+
+		public record PrivateFieldAndComputedProperty(int ID)
+		{
+			public int PublicField;
+
+			private int privateField;
+
+			public int Computed => privateField + PublicField;
+
+			public int Auto { get; set; }
+		}
+
+		public record DerivedWithInterleavedMembers(int B) : Base(B.ToString())
+		{
+			public int Field;
+
+			public int Property { get; set; }
 		}
 	}
 

@@ -311,8 +311,19 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				return parentScope?.IsReservedVariableName(name, out index) ?? false;
 			}
 
-			public void ReserveVariableName(string name, int index = 1)
+			public void ReserveVariableName(string name, int index = 1, ILFunction targetFunction = null)
 			{
+				if (targetFunction != null && targetFunction != function)
+				{
+					var scope = parentScope;
+					while (scope != null && scope.function != targetFunction)
+						scope = scope.parentScope;
+					if (scope != null)
+					{
+						scope.ReserveVariableName(name, index);
+						return;
+					}
+				}
 				reservedVariableNames[name] = index;
 			}
 
@@ -372,7 +383,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					newName = nameWithoutNumber + newIndex.ToString();
 				}
 				// update the last used index
-				ReserveVariableName(nameWithoutNumber, newIndex);
+				ReserveVariableName(nameWithoutNumber, newIndex, v.Function);
 				variableMapping[v] = newName;
 				return newName;
 			}
@@ -505,13 +516,21 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 
 		private static void AssignNameToLocalFunction(ILFunction function, VariableScope parentContext)
 		{
-			if (!LocalFunctionDecompiler.ParseLocalFunctionName(function.Name, out _, out var newName) || !IsValidName(newName))
-				newName = null;
 			string nameWithoutNumber;
 			int number;
-			if (!string.IsNullOrEmpty(newName))
+			string newName;
+			if (LocalFunctionDecompiler.ParseLocalFunctionName(function.Name, out _, out newName) && IsValidName(newName))
 			{
 				nameWithoutNumber = SplitName(newName, out number);
+			}
+			else if (IsValidName(function.Name))
+			{
+				// An obfuscated assembly carries an arbitrary name instead of
+				// "<caller>g__name|x_y". Take it verbatim: it has no synthetic suffix to
+				// split off, so its trailing digits belong to the name itself
+				// ("smethod_1", not "smethod_" numbered 1).
+				nameWithoutNumber = function.Name;
+				number = 1;
 			}
 			else
 			{

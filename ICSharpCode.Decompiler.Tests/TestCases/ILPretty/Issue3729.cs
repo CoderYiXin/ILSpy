@@ -46,7 +46,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.ILPretty
 		public void TestArrayElemCtor()
 		{
 			//IL_000f: Unknown result type (might be due to invalid IL or missing references)
-			MyStruct[] array = (MyStruct[])(object)new MyStruct[1] {
+			MyStruct[] array = new MyStruct[1] {
 				new MyStruct(7)
 			};
 		}
@@ -65,6 +65,13 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.ILPretty
 			//IL_0006: Expected O, but got Unknown
 			MyClass value = new MyClass();
 			Console.WriteLine(value);
+		}
+
+		public void TestUnresolvedStructMemberCalls()
+		{
+			MyEnumerator val = default;
+			val.MoveNext();
+			((IDisposable)val/*cast due to constrained. prefix*/).Dispose();
 		}
 	}
 	public class Issue3729_DerivedFromUnknown : MissingBase

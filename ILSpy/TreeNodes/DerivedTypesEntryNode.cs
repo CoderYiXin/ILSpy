@@ -53,9 +53,7 @@ namespace ICSharpCode.ILSpy.TreeNodes
 
 		public override object? NavigationText => $"{Text} ({ICSharpCode.ILSpy.Properties.Resources.DerivedTypes})";
 
-		public override object Icon => type.Kind == TypeKind.Interface
-			? Images.Interface
-			: Images.Class;
+		public override object Icon => TypeTreeNode.GetIcon(type);
 
 		protected override void LoadChildren()
 		{
@@ -69,16 +67,18 @@ namespace ICSharpCode.ILSpy.TreeNodes
 		};
 
 		/// <summary>
-		/// Drops non-public entries under PublicOnly visibility, otherwise recurses so the user
-		/// can drill into derived chains. The active search term is deliberately not consulted:
-		/// <see cref="LanguageSettings.SearchTermMatches"/> is a no-op so the assembly tree stays
-		/// independent of the search pane.
+		/// Drops non-public entries under PublicOnly visibility, otherwise reports a match. It must
+		/// not report Recurse: the filter cascade's Recurse handling force-loads this node's lazy
+		/// children and hides the node when all of them are hidden, so a leaf derived type (no
+		/// further subclasses, hence no children) would vanish from the tree. The active search term
+		/// is deliberately not consulted: <see cref="LanguageSettings.SearchTermMatches"/> is a
+		/// no-op so the assembly tree stays independent of the search pane.
 		/// </summary>
 		public override FilterResult Filter(LanguageSettings settings)
 		{
 			if (settings.ShowApiLevel == ApiVisibility.PublicOnly && !IsPublicAPI)
 				return FilterResult.Hidden;
-			return FilterResult.Recurse;
+			return FilterResult.Match;
 		}
 
 		public override void ActivateItem(IPlatformRoutedEventArgs e)

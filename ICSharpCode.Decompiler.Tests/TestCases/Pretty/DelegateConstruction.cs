@@ -261,7 +261,11 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty.DelegateConstruction
 		{
 			public Func<TCaptured> GetFunc(Func<TNonCaptured, TCaptured> f)
 			{
+#if CS71
+				TCaptured captured = f(default);
+#else
 				TCaptured captured = f(default(TNonCaptured));
+#endif
 				return () => {
 					Console.WriteLine(captured.GetType().FullName);
 					return captured;
@@ -525,7 +529,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty.DelegateConstruction
 
 		public static void ExtensionDelegateReference(IEnumerable<int> ints)
 		{
-			Use2(ints.Select<int, int>);
+			Use2(ints.Select);
 		}
 
 #if CS70
@@ -594,6 +598,15 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty.DelegateConstruction
 			return ([My] int x) => {
 				Console.WriteLine(x);
 			};
+		}
+
+		public static int LambdaWithAttributeOnAnonymousTypeParameter()
+		{
+			return new[] {
+				new {
+					X = 1
+				}
+			}.Select([My] (a) => a.X).Sum();
 		}
 #endif
 

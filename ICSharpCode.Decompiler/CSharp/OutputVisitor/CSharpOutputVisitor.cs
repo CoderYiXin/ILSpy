@@ -620,7 +620,11 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 		{
 			StartNode(arrayCreateExpression);
 			WriteKeyword(ArrayCreateExpression.NewKeyword);
-			arrayCreateExpression.Type?.AcceptVisitor(this);
+			if (arrayCreateExpression.Type != null)
+			{
+				Space();
+				arrayCreateExpression.Type.AcceptVisitor(this);
+			}
 			if (arrayCreateExpression.Arguments.Count > 0)
 			{
 				WriteCommaSeparatedListInBrackets(arrayCreateExpression.Arguments);
@@ -886,11 +890,14 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 			StartNode(defaultValueExpression);
 
 			WriteKeyword(DefaultValueExpression.DefaultKeyword);
-			LPar();
-			Space(policy.SpacesWithinTypeOfParentheses);
-			defaultValueExpression.Type.AcceptVisitor(this);
-			Space(policy.SpacesWithinTypeOfParentheses);
-			RPar();
+			if (defaultValueExpression.Type is not null)
+			{
+				LPar();
+				Space(policy.SpacesWithinTypeOfParentheses);
+				defaultValueExpression.Type.AcceptVisitor(this);
+				Space(policy.SpacesWithinTypeOfParentheses);
+				RPar();
+			}
 
 			EndNode(defaultValueExpression);
 		}
@@ -1054,11 +1061,21 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 
 		protected bool LambdaNeedsParenthesis(LambdaExpression lambdaExpression)
 		{
+			if (lambdaExpression.Attributes.Count > 0)
+			{
+				// attributes on the lambda require a parenthesized parameter list
+				return true;
+			}
 			if (lambdaExpression.Parameters.Count != 1)
 			{
 				return true;
 			}
 			var p = lambdaExpression.Parameters.Single();
+			if (p.Attributes.Count > 0)
+			{
+				// parameter attributes have no unparenthesized form
+				return true;
+			}
 			return !(p.Type is null && p.ParameterModifier == ReferenceKind.None && !p.IsParams);
 		}
 
@@ -1110,6 +1127,7 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 		{
 			StartNode(objectCreateExpression);
 			WriteKeyword(ObjectCreateExpression.NewKeyword);
+			Space();
 			objectCreateExpression.Type.AcceptVisitor(this);
 			bool useParenthesis = objectCreateExpression.Arguments.Any() || objectCreateExpression.Initializer is null;
 			if (useParenthesis)

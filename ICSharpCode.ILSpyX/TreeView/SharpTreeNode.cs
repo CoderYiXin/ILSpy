@@ -23,6 +23,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
+using System.Threading;
 
 using ICSharpCode.ILSpyX.TreeView.PlatformAbstractions;
 
@@ -161,6 +162,7 @@ namespace ICSharpCode.ILSpyX.TreeView
 			set {
 				if (isHidden != value)
 				{
+					VerifyAccess(nameof(IsHidden));
 					isHidden = value;
 					if (modelParent != null)
 						UpdateIsVisible(modelParent.isVisible && modelParent.isExpanded, true);
@@ -199,13 +201,29 @@ namespace ICSharpCode.ILSpyX.TreeView
 
 		public virtual void OnChildrenChanged(NotifyCollectionChangedEventArgs e)
 		{
+			if (e.Action == NotifyCollectionChangedAction.Move)
+			{
+				// A move keeps the node and its parent, so none of the attach/detach work below
+				// applies: only the node's position in the flat list changes, and it takes its
+				// visible descendants with it as one run.
+				MoveChild((SharpTreeNode)e.OldItems![0]!, e.NewStartingIndex);
+				RaiseIsLastChangedIfNeeded(e);
+				return;
+			}
 			if (e.OldItems != null)
 			{
+				// Detach the whole set before announcing any of it. The per-node notifications
+				// below reach the selection, and a listener that reacts to the first of them would
+				// otherwise still find the rest of the same removal attached, and treat those as a
+				// selection the user made -- ending with the last node of the set on its own.
 				foreach (SharpTreeNode node in e.OldItems)
 				{
 					Debug.Assert(node.modelParent == this);
 					node.modelParent = null;
 					node.OnParentChanged();
+				}
+				foreach (SharpTreeNode node in e.OldItems)
+				{
 					Debug.WriteLine("Removing {0} from {1}", node, this);
 					SharpTreeNode removeEnd = node;
 					while (removeEnd.modelChildren != null && removeEnd.modelChildren.Count > 0)
@@ -268,6 +286,31 @@ namespace ICSharpCode.ILSpyX.TreeView
 			RaisePropertyChanged(nameof(ShowExpander));
 			RaiseIsLastChangedIfNeeded(e);
 		}
+
+		void MoveChild(SharpTreeNode node, int newIndex)
+		{
+			Debug.Assert(node.modelParent == this);
+			if (!node.isVisible)
+			{
+				// Not part of the flat list, so the reorder of modelChildren is all there is to do.
+				return;
+			}
+			int oldVisibleIndex = GetVisibleIndexForNode(node);
+			List<SharpTreeNode> movedNodes = node.VisibleDescendantsAndSelf().ToList();
+			SharpTreeNode moveEnd = node;
+			while (moveEnd.modelChildren != null && moveEnd.modelChildren.Count > 0)
+				moveEnd = moveEnd.modelChildren.Last();
+			RemoveNodes(node, moveEnd);
+
+			// Same rule as insertion: the node goes after its predecessor's last descendant, or
+			// directly after this parent when it becomes the first child.
+			SharpTreeNode? insertionPos = newIndex == 0 ? null : modelChildren?[newIndex - 1];
+			while (insertionPos != null && insertionPos.modelChildren != null && insertionPos.modelChildren.Count > 0)
+				insertionPos = insertionPos.modelChildren.Last();
+			InsertNodeAfter(insertionPos ?? this, node);
+
+			GetListRoot().treeFlattener?.NodesMoved(oldVisibleIndex, GetVisibleIndexForNode(node), movedNodes);
+		}
 		#endregion
 
 		#region Expanding / LazyLoading
@@ -287,6 +330,7 @@ namespace ICSharpCode.ILSpyX.TreeView
 			set {
 				if (isExpanded != value)
 				{
+					VerifyAccess(nameof(IsExpanded));
 					isExpanded = value;
 					if (isExpanded)
 					{
@@ -363,10 +407,38 @@ namespace ICSharpCode.ILSpyX.TreeView
 		}
 
 		/// <summary>
-		/// Ensures the children were initialized (loads children if lazy loading is enabled)
+		/// Ensures the children were initialized (loads children if lazy loading is enabled).
 		/// </summary>
+		/// <remarks>
+		/// Realizing children mutates a tree that a UI may be indexing concurrently, so on a tree
+		/// that has an owner with a way onto it (see <see cref="SetOwner(Thread, Action{Action})"/>)
+		/// this marshals itself there rather than relying on every caller to remember: the app
+		/// realizes children from background decompile tasks in several places, and a caller that
+		/// forgets corrupts the flat list.
+		///
+		/// A call that is already on the owning thread runs inline, which is what keeps a blocking
+		/// invoke from deadlocking on itself and keeps nesting cheap: once the outermost call has
+		/// marshalled, everything <see cref="LoadChildren"/> triggers below it is already on the
+		/// owner and hops no further.
+		///
+		/// A tree with no owner is not marshalled: building a subtree on a worker and publishing it
+		/// on the UI thread is a legitimate pattern, and nothing is displaying that subtree yet.
+		/// </remarks>
 		public void EnsureLazyChildren()
 		{
+			if (!LazyLoading)
+				return;
+			SharpTreeNode? ownerNode = OwnerNode;
+			if (ownerNode?.ownerInvoke is { } invoke && ownerNode.owner != Thread.CurrentThread)
+				invoke(LoadLazyChildren);
+			else
+				LoadLazyChildren();
+		}
+
+		void LoadLazyChildren()
+		{
+			// Re-checked after marshalling: the owning thread may have realized the children while
+			// the calling thread was queued behind it.
 			if (LazyLoading)
 			{
 				LazyLoading = false;
@@ -637,6 +709,18 @@ namespace ICSharpCode.ILSpyX.TreeView
 		public virtual void DeleteCore()
 		{
 			throw new NotSupportedException(GetType().Name + " does not support deletion");
+		}
+
+		/// <summary>
+		/// Deletes <paramref name="nodes"/> -- the whole set the user asked to remove, this node
+		/// included. Override when the underlying model can drop a set in one operation, so its
+		/// listeners see one change instead of one per node.
+		/// </summary>
+		public virtual void Delete(SharpTreeNode[] nodes)
+		{
+			ArgumentNullException.ThrowIfNull(nodes);
+			foreach (var node in nodes)
+				node.Delete();
 		}
 
 		public virtual IPlatformDataObject Copy(SharpTreeNode[] nodes)

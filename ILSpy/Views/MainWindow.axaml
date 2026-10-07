@@ -20,8 +20,8 @@
 	</Design.DataContext>
 
 	<Window.KeyBindings>
-		<!-- Browser-style navigation. XButton1/2 (mouse Back/Forward) aren't first-class in
-		     Avalonia 12 yet, so we wire keyboard only for now. -->
+		<!-- Browser-style keyboard navigation. The mouse back/forward buttons drive the same
+		     commands from code-behind (KeyBindings cannot express pointer buttons). -->
 		<KeyBinding Gesture="Alt+Left" Command="{Binding DockWorkspace.NavigateBackCommand}" />
 		<KeyBinding Gesture="Alt+Right" Command="{Binding DockWorkspace.NavigateForwardCommand}" />
 		<!-- Search pane shortcuts. Ctrl+Shift+F is the WPF default; Ctrl+E mirrors the
@@ -42,7 +42,16 @@
 		<local:MainToolBar DockPanel.Dock="Top" />
 
 		<!-- Update banner: docks under the toolbar, IsVisible-bound to the panel viewmodel. -->
-		<views:UpdatePanel DockPanel.Dock="Top" DataContext="{Binding UpdatePanel}" />
+		<!-- Hosted through a content template rather than given a DataContext binding of its own:
+		     the panel then never inherits the window's view model, against which its compiled
+		     bindings cannot resolve. -->
+		<ContentControl DockPanel.Dock="Top" Content="{Binding UpdatePanel}">
+			<ContentControl.ContentTemplate>
+				<DataTemplate x:DataType="vm:UpdatePanelViewModel">
+					<views:UpdatePanel />
+				</DataTemplate>
+			</ContentControl.ContentTemplate>
+		</ContentControl>
 
 		<!-- Status bar (hidden by default, like WPF) -->
 		<Border DockPanel.Dock="Bottom" Height="26" IsVisible="False" Name="statusBar">

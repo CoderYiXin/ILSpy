@@ -24,7 +24,6 @@
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
     <Copyright>Copyright 2011-$([System.DateTime]::Now.Year) AlphaSierraPapa</Copyright>
     <PackageTags>C# Decompiler ILSpy</PackageTags>
-    <GenerateSBOM>true</GenerateSBOM>
 
     <NeutralLanguage>en-US</NeutralLanguage>
     <GenerateAssemblyVersionAttribute>False</GenerateAssemblyVersionAttribute>
@@ -69,6 +68,7 @@
 
   <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true'">
     <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+	<GenerateSBOM>true</GenerateSBOM>
   </PropertyGroup>
 
   <!-- Inject ILSpyUpdateAssemblyInfo as dependency of the GetPackageVersion
@@ -91,11 +91,11 @@
     </PackageReference>
     <PackageReference Include="System.Collections.Immutable" Version="9.0.0" />
     <PackageReference Include="System.Reflection.Metadata" Version="9.0.0" />
-    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.400">
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.401">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="10.0.400">
+    <PackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="10.0.401">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
     </PackageReference>
@@ -175,6 +175,14 @@
     <Compile Include="Properties\DecompilerVersionInfo.cs" />
     <!-- A template with placeholder tokens, transformed into DecompilerVersionInfo.cs; never compiled. -->
     <Compile Remove="Properties\DecompilerVersionInfo.template.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Update="IL\Instructions.cs">
+      <DesignTime>True</DesignTime>
+      <AutoGen>True</AutoGen>
+      <DependentUpon>Instructions.tt</DependentUpon>
+    </Compile>
   </ItemGroup>
 
 </Project>

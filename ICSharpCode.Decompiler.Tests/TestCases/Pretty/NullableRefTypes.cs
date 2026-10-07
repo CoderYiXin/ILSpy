@@ -3,6 +3,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 
 namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 {
@@ -118,7 +119,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 	{
 		public static TValue? Default<TValue>()
 		{
-			return default(TValue);
+			return default;
 		}
 
 		public static void CallDefault()
@@ -204,7 +205,24 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		[return: MaybeNull]
 		public T FirstOrDefault<T>(IEnumerable<T> source)
 		{
-			return default(T);
+			return default;
+		}
+	}
+
+	public class T09_Linq
+	{
+		public IEnumerable<string> QueryWithNonNullableReferenceTypes(IEnumerable<string> strings)
+		{
+			return from s in strings
+				   where s.Length > 0
+				   select s.ToUpper();
+		}
+
+		public IEnumerable<string> QueryWithNullableReferenceTypes(IEnumerable<string?> strings)
+		{
+			return from s in strings
+				   where s != null
+				   select s.ToUpper();
 		}
 	}
 }

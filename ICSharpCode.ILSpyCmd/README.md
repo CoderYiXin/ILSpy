@@ -39,13 +39,17 @@ Options:
                                           containers are listed individually as '<container>/<entry>'.
   --resource <name>                       Extract a single resource by name (as printed by --list-resources). Resources
                                           whose name ends with '.baml' are decompiled to XAML.
-  --decompile-baml                        When used with -p, decompile BAML resources to XAML files (Page items) instead
-                                          of leaving them as raw byte streams.
+  --decompile-baml                        Deprecated: -p decompiles BAML resources to XAML files (Page items) on its
+                                          own. Accepted so that existing scripts keep working.
   --dump-table <table>                    Dump a metadata table: prints RID, token, names, heap offsets and coded
                                           indexes of every row. <table> is the ECMA-335 table name (e.g. TypeDef,
                                           Property, MethodSemantics; case-insensitive) or table number (decimal or
                                           0x-prefixed hex, e.g. 0x17).
-  --json                                  Output as JSON. Currently only supported together with --dump-table.
+  --dump-pdb                              Dump the debug information of the assembly's PDB: documents, per-method
+                                          sequence points, the scope tree with its variables, constants and imports, and
+                                          custom debug information. Reads both Portable and Windows PDBs. Use
+                                          -usepdb:<file> to point at a PDB that is not next to the assembly.
+  --json                                  Output as JSON. Only supported together with --dump-table or --dump-pdb.
   -lv|--languageversion <version>         C# Language version: CSharp1, CSharp2, CSharp3, CSharp4, CSharp5, CSharp6,
                                           CSharp7, CSharp7_1, CSharp7_2, CSharp7_3, CSharp8_0, CSharp9_0, CSharp10_0,
                                           CSharp11_0, CSharp12_0, CSharp13_0, Preview or Latest
@@ -64,6 +68,9 @@ Options:
   --no-dead-stores                        Remove dead stores.
   -d|--dump-package                       Dump package assemblies into a folder. This requires the output directory
                                           option.
+  --bundle-entry <name>                   The assembly inside a single-file bundle (or other package) to work on, as
+                                          printed when such a file is passed without this option. Ignored for input
+                                          files that are not packages.
   --nested-directories                    Use nested directories for namespaces.
   --disable-updatecheck                   If using ilspycmd in a tight loop or fully automated scenario, you might want
                                           to disable the automatic update check.
@@ -118,8 +125,8 @@ Examples:
     Extract a single resource. If the name ends with .baml, the output is decompiled XAML; otherwise raw bytes.
         ilspycmd sample.dll --resource sample.g.resources/mainwindow.baml -o c:\decompiled
 
-    Decompile assembly as a compilable project and convert all BAML resources to XAML Page items.
-        ilspycmd sample.dll -p -o c:\decompiled --decompile-baml
+    Decompile assembly as a compilable project. BAML resources become XAML Page items.
+        ilspycmd sample.dll -p -o c:\decompiled
 ```
 
 ## Generate HTML diagrammers
